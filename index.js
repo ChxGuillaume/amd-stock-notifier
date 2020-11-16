@@ -1,6 +1,7 @@
 require('dotenv').config()
 
 const axios = require('axios');
+const fs = require('fs');
 const CronJob = require('cron').CronJob;
 const { parse } = require('node-html-parser');
 const { Telegraf, Telegram } = require('telegraf');
@@ -31,6 +32,11 @@ const amd_products = {
 const bot_listener = new Telegraf(process.env.TELEGRAM_TOKEN);
 const bot = new Telegram(process.env.TELEGRAM_TOKEN);
 
+const job = new CronJob('0 0/30 * * * *', () => fetchProductsStatus(), null, true);
+
+let chats = [];
+loadChats();
+
 bot.setMyCommands([
     {
         command: 'get_state',
@@ -39,6 +45,8 @@ bot.setMyCommands([
 ]);
 
 bot_listener.start((ctx) => {
+    addChatID(ctx.from.id);
+
     const sender_name = ctx.from.first_name;
     ctx.reply(`Hello ${sender_name}`);
 });
@@ -63,24 +71,44 @@ bot_listener.launch()
 
 function fetchProductsStatus() {
     console.log('Fetching products at', new Date());
-    
+
     for (const key in amd_products) {
         const product = amd_products[key];
         axios
             .get(product.url)
             .then(({ data }) => {
                 const html = parse(data);
-                const productOutOfStock = html.querySelector('.product-out-of-stock');
-                product.stock = !productOutOfStock;
+                const productInStock = !html.querySelector('.product-out-of-stock');
+
+                if (product.stock != productInStock) {
+                    product.stock = productInStock;
+                    telegramBroadcast(product.name + ' is ' + (product.stock ? 'in stock' : 'out of stock'));
+                }
             })
-            .catch(() => ctx.reply('Oops, i got a bug!'));
+            .catch(() => console.error('Oops, error fetching AMD website.'));
     }
 }
+
 fetchProductsStatus();
 
-var job = new CronJob(
-	'0 0/30 * * * *',
-	() => fetchProductsStatus(),
-	null,
-	true
-);
+function telegramBroadcast(message) {
+    for (const id of chats) {
+        bot.sendMessage(id, message);
+    }
+}
+
+function loadChats() {
+    fs.access('./chat_ids.json', fs.constants.F_OK, (err) => {
+        if (err) saveChats();
+        else chats = JSON.parse(fs.readFileSync('./chat_ids.json', { encoding: 'utf-8' }));
+    });
+}
+
+function saveChats() {
+    fs.writeFileSync('./chat_ids.json', JSON.stringify(chats));
+}
+
+function addChatID(id) {
+    chats.push(id);
+    saveChats();
+}
